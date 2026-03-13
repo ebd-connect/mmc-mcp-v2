@@ -4,6 +4,7 @@ import { OutcomeTracker } from "./outcomeTracker.js";
 import { executeJob, type DataStore } from "./jobExecutor.js";
 import { evaluateScenarios } from "./scenarioEvaluator.js";
 import { toCamelCase } from "./expressionNormalizer.js";
+import type { CapabilityRegistry } from "../capabilities/capability.js";
 
 /**
  * Execute a single interaction slice tool call, then run the full
@@ -14,7 +15,8 @@ export async function executeSkillTool(
   interactionSlice: ParsedSlice,
   toolName: string,
   args: Record<string, unknown>,
-  dataStore: DataStore
+  dataStore: DataStore,
+  capabilityRegistry?: CapabilityRegistry
 ): Promise<ExecutionResult> {
   const factStore = new FactStore();
   const outcomeTracker = new OutcomeTracker();
@@ -59,7 +61,44 @@ export async function executeSkillTool(
 
       let fired = false;
 
-      if (slice.automation?.job) {
+      if (slice.automation?.capability && capabilityRegistry) {
+        // ── Named capability automation ────────────────────────────────────
+        const capRef = slice.automation.capability;
+        const capability = capabilityRegistry.get(capRef.name);
+        if (!capability) {
+          return {
+            success: false,
+            toolName,
+            activeOutcomes: outcomeTracker.getActiveNames(),
+            facts: factStore.toRecord(),
+            error: `Unknown capability: "${capRef.name}". Register it via CapabilityRegistry.`,
+          };
+        }
+        const capResult = await capability.execute(capRef.params, {
+          factStore,
+          dataStore,
+          knownCamelNames,
+        });
+        // Merge returned facts into the store
+        for (const [k, v] of Object.entries(capResult.facts)) {
+          factStore.set(k, v);
+        }
+        // Use found/not-found to pick the scenario path
+        const result = await resolveCapabilityScenarios(
+          slice, factStore, outcomeTracker, capResult.found ?? false
+        );
+        if (result === "error") {
+          const errorScenario = slice.scenarios.find((s) => s.errorMessage.length > 0);
+          return {
+            success: false,
+            toolName,
+            activeOutcomes: outcomeTracker.getActiveNames(),
+            facts: factStore.toRecord(),
+            error: errorScenario?.errorMessage ?? "Unknown error in capability automation",
+          };
+        }
+        fired = result === "fired";
+      } else if (slice.automation?.job) {
         // ── Job-based automation ─────────────────────────────────────────
         // Differentiate guest / success / error paths using the job result,
         // because the scenarios' whenBusinessRule prose is not machine-evaluable.
@@ -121,6 +160,55 @@ export async function executeSkillTool(
     facts,
     ...(discount !== undefined ? { discount } : {}),
   };
+}
+
+// ────────────────────────────────────────────────────────────
+// Capability scenario resolution (shared by capability + job paths)
+// ────────────────────────────────────────────────────────────
+
+type AutomationResult = "fired" | "skipped" | "error";
+
+/**
+ * After a capability has already merged its facts into the store,
+ * select and fire the appropriate scenario based on whether a record was found.
+ *
+ * Uses the same fallback/success heuristics as runJobAutomation so that the
+ * behaviour of existing job-based slices is preserved when migrated to capabilities.
+ */
+async function resolveCapabilityScenarios(
+  slice: ParsedSlice,
+  factStore: FactStore,
+  outcomeTracker: OutcomeTracker,
+  found: boolean
+): Promise<AutomationResult> {
+  const eligible = slice.scenarios.filter((s) => outcomeTracker.hasAll(s.givenOutcomeIds));
+
+  if (!found) {
+    const fallback = findFallbackScenario(eligible);
+    if (fallback) {
+      for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker);
+      return "fired";
+    }
+    return "skipped";
+  }
+
+  // Record found — first try success scenario, then error, then fallback
+  const success = findSuccessScenario(eligible);
+  if (success) {
+    for (const outcome of success.thenOutcomes) outcomeTracker.produce(outcome);
+    return "fired";
+  }
+
+  const errorScenario = eligible.find((s) => s.errorMessage.length > 0);
+  if (errorScenario) return "error";
+
+  const fallback = findFallbackScenario(eligible);
+  if (fallback) {
+    for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker);
+    return "fired";
+  }
+
+  return "skipped";
 }
 
 // ────────────────────────────────────────────────────────────

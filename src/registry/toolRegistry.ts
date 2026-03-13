@@ -1,6 +1,7 @@
 import type { ParsedSkill, ParsedSlice, ToolDefinition, ExecutionResult } from "../types/skill.js";
 import type { DataStore } from "../engine/jobExecutor.js";
 import { executeSkillTool } from "../engine/skillExecutor.js";
+import type { CapabilityRegistry } from "../capabilities/capability.js";
 
 // ────────────────────────────────────────────────────────────
 // Tool name helpers
@@ -52,7 +53,8 @@ export class ToolRegistry {
 
   constructor(
     private readonly skills: ParsedSkill[],
-    private readonly dataStore: DataStore
+    private readonly dataStore: DataStore,
+    private readonly capabilityRegistry?: CapabilityRegistry
   ) {}
 
   buildAll(): void {
@@ -116,6 +118,6 @@ export class ToolRegistry {
       };
     }
 
-    return executeSkillTool(skill, slice, name, args, this.dataStore);
+    return executeSkillTool(skill, slice, name, args, this.dataStore, this.capabilityRegistry);
   }
 }

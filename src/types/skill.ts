@@ -40,11 +40,27 @@ export interface RawJob {
   returnedFact: RawFact; // cursor name used in template resolution
 }
 
+/**
+ * Explicit capability reference in a skill JSON.
+ * Allows slices to invoke any registered capability by name.
+ * Example:
+ * ```json
+ * { "name": "json:read", "params": { "collection": "users", "find": "{{CustomerId}}", ... } }
+ * ```
+ */
+export interface RawCapabilityRef {
+  name: string; // e.g. "json:read", "http:post", "crm:lookup"
+  params: Record<string, unknown>;
+}
+
 export interface RawAutomation {
   id: string;
   name: string;
   facts: RawFact[];
+  /** Shorthand for a json:read capability — preserved for backward compatibility. */
   job?: RawJob;
+  /** Explicit named capability invocation — takes precedence over `job` when present. */
+  capability?: RawCapabilityRef;
 }
 
 export interface RawQuery {
@@ -133,10 +149,24 @@ export interface ParsedJob {
   cursorName: string; // "user" from returnedFact.name
 }
 
+/**
+ * Parsed capability reference — produced by the skill loader from either a
+ * `RawCapabilityRef` or a `RawJob` (which is normalised to a "json:read" capability ref).
+ */
+export interface ParsedCapabilityRef {
+  /** Registered capability name, e.g. "json:read". */
+  name: string;
+  /** Resolved params ready to pass to `Capability.execute()`. */
+  params: Record<string, unknown>;
+}
+
 export interface ParsedAutomation {
   id: string;
   name: string;
+  /** Kept for backward compatibility; the executor uses `capability` when present. */
   job?: ParsedJob;
+  /** Capability to invoke — set from an explicit `capability` field in the skill JSON. */
+  capability?: ParsedCapabilityRef;
 }
 
 export interface ParsedSlice {

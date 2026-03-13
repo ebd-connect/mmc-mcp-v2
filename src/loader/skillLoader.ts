@@ -11,6 +11,7 @@ import type {
   ParsedScenario,
   ParsedSlice,
   ParsedSkill,
+  ParsedCapabilityRef,
   SliceKind,
 } from "../types/skill.js";
 import { toCamelCase, normalizeExpression } from "../engine/expressionNormalizer.js";
@@ -99,6 +100,13 @@ function parseSlice(raw: RawSlice, knownFacts: ParsedFact[]): ParsedSlice {
 
   if (kind === "automation" && raw.automation) {
     const auto = raw.automation;
+
+    // Parse explicit capability reference (takes precedence over the job shorthand)
+    let capability: ParsedCapabilityRef | undefined;
+    if (auto.capability) {
+      capability = { name: auto.capability.name, params: auto.capability.params };
+    }
+
     base.automation = {
       id: auto.id,
       name: auto.name,
@@ -112,6 +120,7 @@ function parseSlice(raw: RawSlice, knownFacts: ParsedFact[]): ParsedSlice {
             },
           }
         : {}),
+      ...(capability ? { capability } : {}),
     };
   }
 

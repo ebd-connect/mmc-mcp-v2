@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { loadAllSkills } from "./src/loader/skillLoader.js";
 import { ToolRegistry } from "./src/registry/toolRegistry.js";
 import { JsonFileDataStore } from "./src/engine/jobExecutor.js";
+import { createDefaultRegistry } from "./src/capabilities/index.js";
 
 const __dirname = process.cwd();
 
@@ -25,7 +26,8 @@ async function buildRegistry() {
   const dataDir = join(__dirname, "data");
   const skills = await loadAllSkills(skillsDir);
   const dataStore = new JsonFileDataStore(dataDir);
-  const registry = new ToolRegistry(skills, dataStore);
+  const capabilityRegistry = createDefaultRegistry();
+  const registry = new ToolRegistry(skills, dataStore, capabilityRegistry);
   registry.buildAll();
   return registry;
 }
