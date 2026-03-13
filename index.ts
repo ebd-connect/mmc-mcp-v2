@@ -14,6 +14,7 @@ import { loadAllSkills } from "./src/loader/skillLoader.js";
 import { ToolRegistry } from "./src/registry/toolRegistry.js";
 import { JsonFileDataStore } from "./src/engine/jobExecutor.js";
 import { createDefaultRegistry } from "./src/capabilities/index.js";
+import { EventStore } from "./src/engine/eventStore.js";
 
 const __dirname = process.cwd();
 
@@ -27,7 +28,8 @@ async function buildRegistry() {
   const skills = await loadAllSkills(skillsDir);
   const dataStore = new JsonFileDataStore(dataDir);
   const capabilityRegistry = createDefaultRegistry();
-  const registry = new ToolRegistry(skills, dataStore, capabilityRegistry);
+  const eventStore = new EventStore(join(dataDir, "events.db"));
+  const registry = new ToolRegistry(skills, dataStore, capabilityRegistry, eventStore);
   registry.buildAll();
   return registry;
 }

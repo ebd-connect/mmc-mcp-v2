@@ -2,6 +2,7 @@ import type { ParsedSkill, ParsedSlice, ToolDefinition, ExecutionResult } from "
 import type { DataStore } from "../engine/jobExecutor.js";
 import { executeSkillTool } from "../engine/skillExecutor.js";
 import type { CapabilityRegistry } from "../capabilities/capability.js";
+import type { EventStore } from "../engine/eventStore.js";
 
 // ────────────────────────────────────────────────────────────
 // Tool name helpers
@@ -54,7 +55,8 @@ export class ToolRegistry {
   constructor(
     private readonly skills: ParsedSkill[],
     private readonly dataStore: DataStore,
-    private readonly capabilityRegistry?: CapabilityRegistry
+    private readonly capabilityRegistry?: CapabilityRegistry,
+    private readonly eventStore?: EventStore
   ) {}
 
   buildAll(): void {
@@ -118,6 +120,14 @@ export class ToolRegistry {
       };
     }
 
-    return executeSkillTool(skill, slice, name, args, this.dataStore, this.capabilityRegistry);
+    // Use the first Identifier-type fact value as the correlationId (e.g. customerId)
+    const idFact = slice.commandFacts?.find((f) => f.valueType === "Identifier");
+    const correlationId = (idFact ? String(args[idFact.camelName] ?? "") : "") || "anonymous";
+
+    return executeSkillTool(
+      skill, slice, name, args,
+      this.dataStore, this.capabilityRegistry,
+      this.eventStore, correlationId
+    );
   }
 }

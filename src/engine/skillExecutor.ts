@@ -5,6 +5,13 @@ import { executeJob, type DataStore } from "./jobExecutor.js";
 import { evaluateScenarios } from "./scenarioEvaluator.js";
 import { toCamelCase } from "./expressionNormalizer.js";
 import type { CapabilityRegistry } from "../capabilities/capability.js";
+import type { EventStore } from "./eventStore.js";
+
+interface PersistCtx {
+  eventStore: EventStore;
+  correlationId: string;
+  skillId: string;
+}
 
 /**
  * Execute a single interaction slice tool call, then run the full
@@ -16,10 +23,16 @@ export async function executeSkillTool(
   toolName: string,
   args: Record<string, unknown>,
   dataStore: DataStore,
-  capabilityRegistry?: CapabilityRegistry
+  capabilityRegistry?: CapabilityRegistry,
+  eventStore?: EventStore,
+  correlationId?: string
 ): Promise<ExecutionResult> {
   const factStore = new FactStore();
   const outcomeTracker = new OutcomeTracker();
+  const persist: PersistCtx | undefined =
+    eventStore && correlationId
+      ? { eventStore, correlationId, skillId: skill.id }
+      : undefined;
 
   // 1. Load interaction inputs into fact store
   if (interactionSlice.commandFacts) {
@@ -28,12 +41,21 @@ export async function executeSkillTool(
 
   // 2. Produce the interaction slice's primary outcome(s)
   for (const outcome of interactionSlice.producedOutcomes) {
-    outcomeTracker.produce(outcome);
     for (const fact of outcome.facts) {
       if (fact.calculatedValue !== undefined) {
         factStore.applyCalculatedFact(fact);
       }
     }
+    outcomeTracker.produce(outcome);
+    persist?.eventStore.append({
+      correlationId: persist.correlationId,
+      skillId: persist.skillId,
+      sliceId: interactionSlice.id,
+      sliceName: interactionSlice.name,
+      outcomeId: outcome.id,
+      outcomeName: outcome.name,
+      facts: factStore.toRecord(),
+    });
   }
 
   // 3. Build a flat list of all known fact camelNames for job mapping normalisation
@@ -85,7 +107,7 @@ export async function executeSkillTool(
         }
         // Use found/not-found to pick the scenario path
         const result = await resolveCapabilityScenarios(
-          slice, factStore, outcomeTracker, capResult.found ?? false
+          slice, factStore, outcomeTracker, capResult.found ?? false, persist
         );
         if (result === "error") {
           const errorScenario = slice.scenarios.find((s) => s.errorMessage.length > 0);
@@ -108,7 +130,8 @@ export async function executeSkillTool(
           outcomeTracker,
           dataStore,
           slice.automation.job,
-          knownCamelNames
+          knownCamelNames,
+          persist
         );
         if (result === "error") {
           const errorScenario = slice.scenarios.find((s) => s.errorMessage.length > 0);
@@ -135,7 +158,7 @@ export async function executeSkillTool(
             };
           }
           for (const thenOutcome of match.scenario.thenOutcomes) {
-            applyOutcome(thenOutcome, factStore, outcomeTracker);
+            applyOutcome(thenOutcome, factStore, outcomeTracker, persist, slice.id, slice.name);
           }
           fired = true;
         }
@@ -179,14 +202,15 @@ async function resolveCapabilityScenarios(
   slice: ParsedSlice,
   factStore: FactStore,
   outcomeTracker: OutcomeTracker,
-  found: boolean
+  found: boolean,
+  persist?: PersistCtx
 ): Promise<AutomationResult> {
   const eligible = slice.scenarios.filter((s) => outcomeTracker.hasAll(s.givenOutcomeIds));
 
   if (!found) {
     const fallback = findFallbackScenario(eligible);
     if (fallback) {
-      for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker);
+      for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker, persist, slice.id, slice.name);
       return "fired";
     }
     return "skipped";
@@ -195,7 +219,18 @@ async function resolveCapabilityScenarios(
   // Record found — first try success scenario, then error, then fallback
   const success = findSuccessScenario(eligible);
   if (success) {
-    for (const outcome of success.thenOutcomes) outcomeTracker.produce(outcome);
+    for (const outcome of success.thenOutcomes) {
+      outcomeTracker.produce(outcome);
+      persist?.eventStore.append({
+        correlationId: persist.correlationId,
+        skillId: persist.skillId,
+        sliceId: slice.id,
+        sliceName: slice.name,
+        outcomeId: outcome.id,
+        outcomeName: outcome.name,
+        facts: factStore.toRecord(),
+      });
+    }
     return "fired";
   }
 
@@ -204,7 +239,7 @@ async function resolveCapabilityScenarios(
 
   const fallback = findFallbackScenario(eligible);
   if (fallback) {
-    for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker);
+    for (const outcome of fallback.thenOutcomes) applyOutcome(outcome, factStore, outcomeTracker, persist, slice.id, slice.name);
     return "fired";
   }
 
@@ -235,7 +270,8 @@ async function runJobAutomation(
   outcomeTracker: OutcomeTracker,
   dataStore: DataStore,
   job: NonNullable<NonNullable<ParsedSlice["automation"]>["job"]>,
-  knownCamelNames: string[]
+  knownCamelNames: string[],
+  persist?: PersistCtx
 ): Promise<JobAutomationResult> {
   const findValue = resolveTemplateFromStore(job.findTemplate, factStore);
   const nonNullableScenarios = slice.scenarios.filter((s) =>
@@ -243,11 +279,10 @@ async function runJobAutomation(
   );
 
   if (!findValue) {
-    // Empty customerId → guest / fallback path
     const fallback = findFallbackScenario(nonNullableScenarios);
     if (fallback) {
       for (const outcome of fallback.thenOutcomes) {
-        applyOutcome(outcome, factStore, outcomeTracker);
+        applyOutcome(outcome, factStore, outcomeTracker, persist, slice.id, slice.name);
       }
       return "fired";
     }
@@ -257,30 +292,33 @@ async function runJobAutomation(
   const jobResult = await executeJob(job, factStore, dataStore, knownCamelNames);
 
   if (jobResult.found) {
-    // Apply job mapping results
     for (const [camelKey, value] of Object.entries(jobResult.mappings)) {
       factStore.set(camelKey, value);
     }
-    // Fire success scenario: thenFacts without calculatedValue (value came from job)
     const success = findSuccessScenario(nonNullableScenarios);
     if (success) {
-      // Produce the outcome but do NOT apply calculatedValue overrides —
-      // the actual values are already in factStore from the job result.
       for (const outcome of success.thenOutcomes) {
         outcomeTracker.produce(outcome);
+        persist?.eventStore.append({
+          correlationId: persist.correlationId,
+          skillId: persist.skillId,
+          sliceId: slice.id,
+          sliceName: slice.name,
+          outcomeId: outcome.id,
+          outcomeName: outcome.name,
+          facts: factStore.toRecord(),
+        });
       }
       return "fired";
     }
   } else {
-    // Non-empty customerId but not found in DB → error or fallback
     const errorScenario = nonNullableScenarios.find((s) => s.errorMessage.length > 0);
     if (errorScenario) return "error";
 
-    // Graceful fallback if no explicit error scenario
     const fallback = findFallbackScenario(nonNullableScenarios);
     if (fallback) {
       for (const outcome of fallback.thenOutcomes) {
-        applyOutcome(outcome, factStore, outcomeTracker);
+        applyOutcome(outcome, factStore, outcomeTracker, persist, slice.id, slice.name);
       }
       return "fired";
     }
@@ -327,7 +365,10 @@ function resolveTemplateFromStore(template: string, factStore: FactStore): strin
 function applyOutcome(
   outcome: ParsedOutcome,
   factStore: FactStore,
-  outcomeTracker: OutcomeTracker
+  outcomeTracker: OutcomeTracker,
+  persist?: PersistCtx,
+  sliceId?: string,
+  sliceName?: string
 ): void {
   for (const fact of outcome.facts) {
     if (fact.calculatedValue !== undefined) {
@@ -335,4 +376,13 @@ function applyOutcome(
     }
   }
   outcomeTracker.produce(outcome);
+  persist?.eventStore.append({
+    correlationId: persist.correlationId,
+    skillId: persist.skillId,
+    sliceId: sliceId ?? "",
+    sliceName: sliceName ?? "",
+    outcomeId: outcome.id,
+    outcomeName: outcome.name,
+    facts: factStore.toRecord(),
+  });
 }
