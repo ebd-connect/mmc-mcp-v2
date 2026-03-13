@@ -136,7 +136,7 @@ async function startHttp() {
     return c.body(null, 204);
   });
 
-  const port = Number(process.env["PORT"]) || 3000;
+  const port = Number(process.env["PORT"]) || 3001;
   console.error(`MMC MCP Server starting on http://localhost:${port}/mcp`);
   serve({ fetch: app.fetch, port });
 }
