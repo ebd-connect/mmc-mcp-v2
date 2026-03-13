@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ParsedJob } from "../types/skill.js";
 import type { FactStore } from "./factStore.js";
@@ -10,6 +10,14 @@ import { toCamelCase } from "./expressionNormalizer.js";
 
 export interface DataStore {
   findOne(collection: string, id: string): Promise<Record<string, unknown> | null>;
+  /** Read every record in a collection (used by json:write for upsert). */
+  readAll?(collection: string): Promise<Record<string, unknown>[]>;
+  /** Upsert a record by the given idField (default: "id"). */
+  upsert?(
+    collection: string,
+    record: Record<string, unknown>,
+    idField?: string
+  ): Promise<void>;
 }
 
 /**
@@ -22,9 +30,7 @@ export class JsonFileDataStore implements DataStore {
 
   constructor(private readonly dataDir: string) {}
 
-  async findOne(collection: string, id: string): Promise<Record<string, unknown> | null> {
-    if (!id) return null;
-
+  private async load(collection: string): Promise<Record<string, unknown>[]> {
     let records = this.cache.get(collection);
     if (!records) {
       try {
@@ -32,11 +38,47 @@ export class JsonFileDataStore implements DataStore {
         records = JSON.parse(raw) as Record<string, unknown>[];
         this.cache.set(collection, records);
       } catch {
-        return null;
+        records = [];
+        this.cache.set(collection, records);
       }
     }
+    return records;
+  }
 
+  async findOne(collection: string, id: string): Promise<Record<string, unknown> | null> {
+    if (!id) return null;
+    const records = await this.load(collection);
     return records.find((r) => r["id"] === id) ?? null;
+  }
+
+  async readAll(collection: string): Promise<Record<string, unknown>[]> {
+    return this.load(collection);
+  }
+
+  async upsert(
+    collection: string,
+    record: Record<string, unknown>,
+    idField = "id"
+  ): Promise<void> {
+    const records = await this.load(collection);
+    const idValue = record[idField];
+    const idx = idValue !== undefined
+      ? records.findIndex((r) => r[idField] === idValue)
+      : -1;
+
+    if (idx !== -1) {
+      records[idx] = { ...records[idx], ...record };
+    } else {
+      records.push(record);
+    }
+
+    await writeFile(
+      join(this.dataDir, `${collection}.json`),
+      JSON.stringify(records, null, 2),
+      "utf-8"
+    );
+    // Invalidate cache so subsequent reads see the new data
+    this.cache.delete(collection);
   }
 }
 
