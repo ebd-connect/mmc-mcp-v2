@@ -1,0 +1,5 @@
+[
+  { "id": "user-001", "name": "Alice", "tier": "Member" },
+  { "id": "user-002", "name": "Bob",   "tier": "VIP" },
+  { "id": "user-003", "name": "Carol", "tier": "Member" }
+]

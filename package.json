@@ -1,0 +1,37 @@
+{
+  "name": "mmc-mcp-v2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "build": "vite build",
+    "start": "node dist/index.js",
+    "start:http": "node dist/index.js http",
+    "dev": "vite-node index.ts",
+    "dev:http": "vite-node index.ts -- http",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "expression-eval": "^5.0.1",
+    "hono": "^4.12.7",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.0",
+    "vite-node": "^5.3.0",
+    "vitest": "^4.1.0"
+  }
+}
