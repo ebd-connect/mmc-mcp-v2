@@ -15,6 +15,7 @@ import { ToolRegistry } from "./src/registry/toolRegistry.js";
 import { JsonFileDataStore } from "./src/engine/jobExecutor.js";
 import { createDefaultRegistry } from "./src/capabilities/index.js";
 import { EventStore } from "./src/engine/eventStore.js";
+import { createEventLogViewerTool, type FixedTool } from "./src/tools/eventLogViewer.js";
 
 const __dirname = process.cwd();
 
@@ -31,26 +32,41 @@ async function buildRegistry() {
   const eventStore = new EventStore(join(dataDir, "events.db"));
   const registry = new ToolRegistry(skills, dataStore, capabilityRegistry, eventStore);
   registry.buildAll();
-  return registry;
+  const fixedTools: FixedTool[] = [createEventLogViewerTool(eventStore)];
+  return { registry, fixedTools };
 }
 
-function createMcpServer(registry: ToolRegistry): Server {
+function createMcpServer(registry: ToolRegistry, fixedTools: FixedTool[] = []): Server {
   const server = new Server(
     { name: "mmc-mcp", version: "1.0.0" },
     { capabilities: { tools: {} } }
   );
 
+  const fixedToolMap = new Map(fixedTools.map((t) => [t.name, t]));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: registry.listTools().map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
+    tools: [
+      ...registry.listTools().map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+      ...fixedTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const result = await registry.callTool(name, (args as Record<string, unknown>) ?? {});
+    const rawArgs = (args as Record<string, unknown>) ?? {};
+
+    const fixed = fixedToolMap.get(name);
+    if (fixed) return fixed.call(rawArgs);
+
+    const result = await registry.callTool(name, rawArgs);
 
     if (!result.success) {
       return {
@@ -85,15 +101,15 @@ function createMcpServer(registry: ToolRegistry): Server {
 // ────────────────────────────────────────────────────────────
 
 async function startStdio() {
-  const registry = await buildRegistry();
-  const server = createMcpServer(registry);
+  const { registry, fixedTools } = await buildRegistry();
+  const server = createMcpServer(registry, fixedTools);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("MMC MCP Server started (stdio)");
 }
 
 async function startHttp() {
-  const registry = await buildRegistry();
+  const { registry, fixedTools } = await buildRegistry();
   const app = new Hono();
 
   // Session map: sessionId → transport (for stateful multi-client support)
@@ -118,7 +134,7 @@ async function startHttp() {
         },
       });
 
-      const server = createMcpServer(registry);
+      const server = createMcpServer(registry, fixedTools);
       await server.connect(transport);
     }
 
